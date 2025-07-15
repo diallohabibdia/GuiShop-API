@@ -1,6 +1,7 @@
-const fs = require('fs');
-const path = require('path');
-const db = require('../config/db');
+const fs = require("fs");
+const path = require("path");
+const db = require("../config/db");
+const BASE_URL = process.env.BASE_URL || "http://localhost:8082";
 
 const {
   createProduct,
@@ -12,81 +13,113 @@ const {
   searchProducts,
   insertProductImages,
   getImagesByProductId,
-} = require('../models/product.model');
+} = require("../models/product.model");
 
-// ✅ Ajouter un produit avec images
+// ✅ Ajouter un produit
 const addProduct = async (req, res) => {
   try {
-    const { title, price, description, category } = req.body;
-    const userId = req.user.userId;
+    const { title, price, description, category, location } = req.body;
+    const userId = req.user?.id;
     const files = req.files;
 
-    if (!title || !price || !files?.length || !category) {
-      return res.status(400).json({ message: 'Champs requis manquants ou aucune image fournie' });
+    if (!userId) return res.status(401).json({ message: "Non authentifié" });
+    if (!title || !price || !description || !category || !files?.length) {
+      return res.status(400).json({ message: "Champs requis manquants ou aucune image fournie" });
+    }
+    if (isNaN(price) || price <= 0) {
+      return res.status(400).json({ message: "Prix invalide" });
     }
 
+    const productLocation = location || req.user?.location || null;
     const firstImage = files[0].filename;
-    const result = await createProduct(title, price, description, firstImage, userId, category);
+
+    const result = await createProduct(title, price, description, firstImage, userId, category, productLocation);
     const productId = result.insertId;
 
     const imagePaths = files.map((file) => file.filename);
     await insertProductImages(productId, imagePaths);
 
-    res.status(201).json({ message: 'Produit avec images ajouté avec succès' });
+    res.status(201).json({ message: "Produit ajouté avec succès", productId });
   } catch (error) {
-    res.status(500).json({ message: "Erreur lors de l'ajout", error: error.message });
+    console.error("❌ Erreur addProduct:", error);
+    res.status(500).json({ message: "Erreur lors de l'ajout du produit", error: error.message });
   }
 };
 
-// ✅ Lister les produits (avec recherche, pagination, filtrage)
+// ✅ Lister les produits
 const listProducts = async (req, res) => {
   try {
-    const { page = 1, limit = 10, search, category, status } = req.query;
+    const { page = 1, limit = 10, search, category, status, location } = req.query;
+    const offset = (parseInt(page) - 1) * parseInt(limit);
 
-    // Recherche par mot-clé
+    let baseQuery = `
+      SELECT 
+        p.*, u.prenom, u.nom, 
+        GROUP_CONCAT(pi.url) AS images
+      FROM Product p
+      JOIN User u ON p.userId = u.id
+      LEFT JOIN ProductImage pi ON pi.productId = p.id
+    `;
+
+    const conditions = [];
+    const values = [];
+
     if (search) {
-      const results = await searchProducts(search);
-      return res.json(results);
+      conditions.push(`p.title LIKE ?`);
+      values.push(`%${search}%`);
+    }
+    if (category && category !== "Toutes") {
+      conditions.push(`p.category_id = ?`);
+      values.push(category);
+    }
+    if (location && location !== "Toutes") {
+      conditions.push(`p.location = ?`);
+      values.push(location);
+    }
+    if (status && ["actif", "vendu", "attente"].includes(status)) {
+      conditions.push(`p.status = ?`);
+      values.push(status);
     }
 
-    // Filtrage par catégorie
-    if (category && category !== 'Toutes') {
-      const [rows] = await db.execute(
-        'SELECT * FROM products WHERE category = ? ORDER BY created_at DESC LIMIT ? OFFSET ?',
-        [category, parseInt(limit), (parseInt(page) - 1) * parseInt(limit)]
-      );
-      return res.json(rows);
+    if (conditions.length > 0) {
+      baseQuery += " WHERE " + conditions.join(" AND ");
     }
 
-    // Filtrage par statut
-    if (status && ['actif', 'vendu', 'attente'].includes(status)) {
-      const [rows] = await db.execute(
-        'SELECT * FROM products WHERE status = ? ORDER BY created_at DESC LIMIT ? OFFSET ?',
-        [status, parseInt(limit), (parseInt(page) - 1) * parseInt(limit)]
-      );
-      return res.json(rows);
-    }
+    baseQuery += `
+      GROUP BY p.id
+      ORDER BY p.created_at DESC
+      LIMIT ? OFFSET ?
+    `;
+    values.push(parseInt(limit), offset);
 
-    const products = await getPaginatedProducts(page, limit);
-    res.json(products);
+    const [rows] = await db.execute(baseQuery, values);
+
+    const formatted = rows.map((p) => ({
+      ...p,
+      images: p.images ? p.images.split(",").map(img => `${BASE_URL}/uploads/${img}`) : [],
+      seller: `${p.prenom} ${p.nom}`,
+    }));
+
+    res.json(formatted);
   } catch (error) {
-    res.status(500).json({ message: 'Erreur lors de la récupération des produits', error: error.message });
+    console.error("❌ Erreur listProducts:", error.message);
+    res.status(500).json({ message: "Erreur lors de la récupération des produits", error: error.message });
   }
 };
 
-// ✅ Récupérer un produit
+// ✅ Détails d’un produit
 const getOneProduct = async (req, res) => {
   try {
     const { id } = req.params;
     const product = await getProductById(id);
-    if (!product) return res.status(404).json({ message: 'Produit non trouvé' });
+    if (!product) return res.status(404).json({ message: "Produit non trouvé" });
 
     const images = await getImagesByProductId(id);
-    product.images = images;
+    product.images = images.map(img => `${BASE_URL}/uploads/${img.url}`);
 
     res.json(product);
   } catch (error) {
-    res.status(500).json({ message: 'Erreur serveur', error: error.message });
+    res.status(500).json({ message: "Erreur serveur", error: error.message });
   }
 };
 
@@ -94,19 +127,23 @@ const getOneProduct = async (req, res) => {
 const deleteProduct = async (req, res) => {
   try {
     const { id } = req.params;
-    const userId = req.user.userId;
+    const userId = req.user?.id;
 
     const product = await getProductById(id);
-    if (!product) return res.status(404).json({ message: 'Produit non trouvé' });
+    if (!product) return res.status(404).json({ message: "Produit non trouvé" });
+    if (product.userId !== userId) return res.status(403).json({ message: "Non autorisé" });
 
-    if (product.user_id !== userId) {
-      return res.status(403).json({ message: 'Non autorisé à supprimer ce produit' });
+    const images = await getImagesByProductId(id);
+    for (const img of images) {
+      const filePath = path.join(__dirname, "../uploads", img.url);
+      if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
     }
 
+    await db.execute("DELETE FROM ProductImage WHERE productId = ?", [id]);
     await deleteProductById(id);
-    res.json({ message: 'Produit supprimé avec succès' });
+    res.json({ message: "Produit supprimé avec succès" });
   } catch (error) {
-    res.status(500).json({ message: 'Erreur serveur', error: error.message });
+    res.status(500).json({ message: "Erreur serveur", error: error.message });
   }
 };
 
@@ -114,105 +151,155 @@ const deleteProduct = async (req, res) => {
 const updateProduct = async (req, res) => {
   try {
     const { id } = req.params;
-    const { title, price, description, category } = req.body;
-    const userId = req.user.userId;
+    const { title, price, description, category, location } = req.body;
+    const userId = req.user?.id;
     const files = req.files;
 
     const product = await getProductById(id);
-    if (!product) return res.status(404).json({ message: 'Produit non trouvé' });
+    if (!product) return res.status(404).json({ message: "Produit non trouvé" });
+    if (product.userId !== userId) return res.status(403).json({ message: "Non autorisé" });
 
-    if (product.user_id !== userId) {
-      return res.status(403).json({ message: 'Non autorisé à modifier ce produit' });
+    const updatedLocation = location || product.location;
+    const image = files?.[0]?.filename || product.image;
+
+    await updateProductById(id, title, price, description, image, userId, category, updatedLocation);
+
+    if (files?.length) {
+      const images = files.map((f) => f.filename);
+      await insertProductImages(id, images);
     }
 
-    const newImage = (files && files.length > 0) ? files[0].filename : product.image;
-    await updateProductById(id, title, price, description, newImage, userId, category);
-
-    if (files && files.length > 0) {
-      const imagePaths = files.map((file) => file.filename);
-      await insertProductImages(id, imagePaths);
-    }
-
-    res.json({ message: 'Produit mis à jour avec succès' });
+    res.json({ message: "Produit mis à jour avec succès" });
   } catch (error) {
-    res.status(500).json({ message: 'Erreur serveur', error: error.message });
+    res.status(500).json({ message: "Erreur serveur", error: error.message });
   }
 };
 
-// ✅ Supprimer une image spécifique
-const deleteProductImage = async (req, res) => {
-  try {
-    const { id } = req.params;
-    const userId = req.user.userId;
-
-    const [image] = await db.execute(`
-      SELECT pi.image_url, p.user_id 
-      FROM product_images pi 
-      JOIN products p ON p.id = pi.product_id 
-      WHERE pi.id = ?`, [id]);
-
-    if (!image.length) return res.status(404).json({ message: "Image non trouvée" });
-
-    if (image[0].user_id !== userId) {
-      return res.status(403).json({ message: "Non autorisé à supprimer cette image" });
-    }
-
-    await db.execute('DELETE FROM product_images WHERE id = ?', [id]);
-
-    const imagePath = path.join(__dirname, '..', 'uploads', image[0].image_url);
-    if (fs.existsSync(imagePath)) fs.unlinkSync(imagePath);
-
-    res.json({ message: "Image supprimée avec succès" });
-  } catch (error) {
-    res.status(500).json({ message: "Erreur lors de la suppression de l'image", error: error.message });
-  }
-};
-
-// ✅ Supprimer toutes les images d’un produit
-const deleteAllProductImages = async (req, res) => {
-  try {
-    const { id } = req.params;
-    const userId = req.user.userId;
-
-    const product = await getProductById(id);
-    if (!product || product.user_id !== userId) {
-      return res.status(403).json({ message: "Non autorisé ou produit inexistant" });
-    }
-
-    const [images] = await db.execute('SELECT id, image_url FROM product_images WHERE product_id = ?', [id]);
-
-    for (const image of images) {
-      const imagePath = path.join(__dirname, '..', 'uploads', image.image_url);
-      if (fs.existsSync(imagePath)) fs.unlinkSync(imagePath);
-      await db.execute('DELETE FROM product_images WHERE id = ?', [image.id]);
-    }
-
-    res.json({ message: "Toutes les images du produit ont été supprimées" });
-  } catch (error) {
-    res.status(500).json({ message: "Erreur lors de la suppression des images", error: error.message });
-  }
-};
-
-// ✅ Marquer un produit comme vendu
+// ✅ Marquer comme vendu
 const markProductAsSold = async (req, res) => {
   try {
     const { id } = req.params;
-    const userId = req.user.userId;
+    const userId = req.user?.id;
 
-    const [rows] = await db.execute(
-      'SELECT * FROM products WHERE id = ? AND user_id = ?',
-      [id, userId]
-    );
+    const [rows] = await db.execute("SELECT * FROM Product WHERE id = ? AND userId = ?", [id, userId]);
+    if (!rows.length) return res.status(403).json({ message: "Accès refusé" });
 
-    if (rows.length === 0) {
-      return res.status(403).json({ message: "Accès refusé ou produit introuvable" });
-    }
-
-    await db.execute('UPDATE products SET status = "vendu" WHERE id = ?', [id]);
-
-    res.json({ message: "✅ Produit marqué comme vendu" });
+    await db.execute('UPDATE Product SET status = "vendu" WHERE id = ?', [id]);
+    res.json({ message: "Produit marqué comme vendu" });
   } catch (error) {
     res.status(500).json({ message: "Erreur serveur", error: error.message });
+  }
+};
+
+// ✅ Mettre à jour le statut
+const updateProductStatus = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { status } = req.body;
+    const userId = req.user?.id;
+
+    const [rows] = await db.execute("SELECT * FROM Product WHERE id = ? AND userId = ?", [id, userId]);
+    if (!rows.length) return res.status(403).json({ message: "Accès refusé" });
+
+    await db.execute("UPDATE Product SET status = ? WHERE id = ?", [status, id]);
+    res.json({ message: "Statut mis à jour" });
+  } catch (error) {
+    res.status(500).json({ message: "Erreur serveur", error: error.message });
+  }
+};
+
+// ✅ Supprimer une image
+const deleteProductImage = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userId = req.user?.id;
+
+    const [rows] = await db.execute(`
+      SELECT pi.url, p.userId 
+      FROM ProductImage pi 
+      JOIN Product p ON pi.productId = p.id 
+      WHERE pi.id = ?`, [id]);
+
+    if (!rows.length) return res.status(404).json({ message: "Image non trouvée" });
+    if (rows[0].userId !== userId) return res.status(403).json({ message: "Non autorisé" });
+
+    const filePath = path.join(__dirname, "../uploads", rows[0].url);
+    if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+
+    await db.execute("DELETE FROM ProductImage WHERE id = ?", [id]);
+    res.json({ message: "Image supprimée" });
+  } catch (error) {
+    res.status(500).json({ message: "Erreur serveur", error: error.message });
+  }
+};
+
+// ✅ Supprimer toutes les images
+const deleteAllProductImages = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userId = req.user?.id;
+
+    const product = await getProductById(id);
+    if (!product) return res.status(404).json({ message: "Produit non trouvé" });
+    if (product.userId !== userId) return res.status(403).json({ message: "Non autorisé" });
+
+    const images = await getImagesByProductId(id);
+    for (const img of images) {
+      const filePath = path.join(__dirname, "../uploads", img.url);
+      if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+    }
+
+    await db.execute("DELETE FROM ProductImage WHERE productId = ?", [id]);
+    res.json({ message: "Toutes les images ont été supprimées" });
+  } catch (error) {
+    res.status(500).json({ message: "Erreur serveur", error: error.message });
+  }
+};
+
+// ✅ Produits de l'utilisateur
+const getMyListings = async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    const [rows] = await db.execute(`
+      SELECT p.*, GROUP_CONCAT(pi.url) AS media
+      FROM Product p
+      LEFT JOIN ProductImage pi ON p.id = pi.productId
+      WHERE p.userId = ?
+      GROUP BY p.id
+      ORDER BY p.created_at DESC`, [userId]);
+
+    const formatted = rows.map((p) => ({
+      ...p,
+      media: p.media ? p.media.split(",").map(img => `${BASE_URL}/uploads/${img}`) : [],
+    }));
+
+    res.json(formatted);
+  } catch (error) {
+    res.status(500).json({ message: "Erreur serveur", error: error.message });
+  }
+};
+
+// ✅ Produits favoris
+const getUserFavoriteProducts = async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    const [rows] = await db.execute(`
+      SELECT p.*, GROUP_CONCAT(pi.url) AS media
+      FROM Favorite f
+      JOIN Product p ON p.id = f.product_id
+      LEFT JOIN ProductImage pi ON p.id = pi.productId
+      WHERE f.userId = ?
+      GROUP BY p.id
+      ORDER BY f.created_at DESC`, [userId]);
+
+    const formatted = rows.map((p) => ({
+      ...p,
+      media: p.media ? p.media.split(',').map(img => `${BASE_URL}/uploads/${img}`) : [],
+    }));
+
+    res.json(formatted);
+  } catch (error) {
+    res.status(500).json({ message: "Erreur favoris", error: error.message });
   }
 };
 
@@ -222,7 +309,11 @@ module.exports = {
   getOneProduct,
   deleteProduct,
   updateProduct,
+  markProductAsSold,
+  updateProductStatus,
   deleteProductImage,
   deleteAllProductImages,
-  markProductAsSold,
+  getAllProducts,
+  getMyListings,
+  getUserFavoriteProducts,
 };

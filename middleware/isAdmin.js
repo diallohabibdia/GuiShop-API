@@ -1,11 +1,20 @@
-const db = require('../config/db');
+const { PrismaClient } = require('@prisma/client');
+const prisma = new PrismaClient();
 
 const isAdmin = async (req, res, next) => {
   try {
-    const userId = req.user.userId;
-    const [rows] = await db.execute('SELECT is_admin FROM users WHERE id = ?', [userId]);
+    const userId = req.user?.id;
 
-    if (rows.length === 0 || !rows[0].is_admin) {
+    if (!userId) {
+      return res.status(401).json({ message: "Utilisateur non authentifié ❌" });
+    }
+
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { role: true }
+    });
+
+    if (!user || user.role !== 'admin') {
       return res.status(403).json({ message: "Accès réservé aux administrateurs ❌" });
     }
 

@@ -1,22 +1,29 @@
+// ✅ category.routes.js
 const express = require('express');
 const router = express.Router();
 
-const {
-  listCategories,
-  createCategory,
-  updateCategory,
-  deleteCategory
-} = require('../controllers/category.controller');
-
+// 🔐 Middleware d'authentification et vérification admin
 const verifyToken = require('../middleware/auth.middleware');
 const isAdmin = require('../middleware/isAdmin');
 
-// ✅ Route publique : lister les catégories
+// 🎯 Contrôleurs des catégories
+const {
+  listCategories,
+  addCategory,
+  updateCategory,
+  deleteCategory,
+} = require('../controllers/category.controller');
+
+// ✅ [GET] /api/categories → Lecture publique (liste des catégories)
 router.get('/', listCategories);
 
-// ✅ Routes protégées : admin uniquement
-router.post('/', verifyToken, isAdmin, createCategory);
+// ✅ [POST] /api/categories → Ajouter une catégorie (admin uniquement)
+router.post('/', verifyToken, isAdmin, addCategory);
+
+// ✅ [PUT] /api/categories/:id → Modifier une catégorie (admin uniquement)
 router.put('/:id', verifyToken, isAdmin, updateCategory);
+
+// ✅ [DELETE] /api/categories/:id → Supprimer une catégorie (admin uniquement)
 router.delete('/:id', verifyToken, isAdmin, deleteCategory);
 
 module.exports = router;

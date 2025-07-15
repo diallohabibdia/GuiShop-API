@@ -1,15 +1,12 @@
-const {
-  getAllCategories,
-  createCategory: createCategoryInDB, // 🔁 renommé pour éviter le conflit
-  updateCategoryById,
-  deleteCategoryById,
-} = require('../models/category.model');
+const prisma = require('../prismaClient');
 
-// ✅ Lister les catégories
+// ✅ Lister toutes les catégories (publique)
 const listCategories = async (req, res) => {
   try {
-    const categories = await getAllCategories();
-    res.json(categories);
+    const categories = await prisma.category.findMany({
+      orderBy: { name: 'asc' },
+    });
+    res.status(200).json(categories);
   } catch (error) {
     console.error('❌ Erreur listCategories:', error.message);
     res.status(500).json({
@@ -19,60 +16,96 @@ const listCategories = async (req, res) => {
   }
 };
 
-// ✅ Créer une nouvelle catégorie
-const createCategory = async (req, res) => {
+// ✅ Ajouter une catégorie (admin uniquement)
+const addCategory = async (req, res) => {
   const { name, icon } = req.body;
-  if (!name || !icon) {
-    return res.status(400).json({ message: 'Champs requis manquants' });
+
+  if (!name?.trim()) {
+    return res.status(400).json({ message: "Le nom est requis." });
   }
 
   try {
-    await createCategoryInDB(name, icon); // ✅ appelle la fonction renommée
-    res.status(201).json({ message: 'Catégorie créée avec succès' });
+    const existing = await prisma.category.findUnique({ where: { name } });
+
+    if (existing) {
+      return res.status(409).json({ message: "Cette catégorie existe déjà." });
+    }
+
+    const newCategory = await prisma.category.create({
+      data: { name, icon },
+    });
+
+    res.status(201).json(newCategory);
   } catch (error) {
-    console.error('❌ Erreur createCategory:', error.message);
-    res.status(500).json({ message: 'Erreur serveur', error: error.message });
+    console.error('❌ Erreur addCategory:', error.message);
+    res.status(500).json({
+      message: "Erreur lors de l'ajout de la catégorie",
+      error: error.message,
+    });
   }
 };
 
-// ✅ Modifier une catégorie existante
+// ✅ Modifier une catégorie (admin uniquement)
 const updateCategory = async (req, res) => {
-  const { id } = req.params;
+  const categoryId = parseInt(req.params.id);
   const { name, icon } = req.body;
 
+  if (!name?.trim()) {
+    return res.status(400).json({ message: "Le nom est requis." });
+  }
+
   try {
-    const result = await updateCategoryById(id, name, icon);
-    if (result.affectedRows === 0) {
-      return res.status(404).json({ message: 'Catégorie non trouvée' });
+    const existing = await prisma.category.findUnique({ where: { id: categoryId } });
+
+    if (!existing) {
+      return res.status(404).json({ message: "Catégorie introuvable." });
     }
 
-    res.json({ message: 'Catégorie mise à jour avec succès' });
+    const updatedCategory = await prisma.category.update({
+      where: { id: categoryId },
+      data: { name, icon },
+    });
+
+    res.status(200).json(updatedCategory);
   } catch (error) {
     console.error('❌ Erreur updateCategory:', error.message);
-    res.status(500).json({ message: 'Erreur serveur', error: error.message });
+    res.status(500).json({
+      message: "Erreur lors de la mise à jour",
+      error: error.message,
+    });
   }
 };
 
-// ✅ Supprimer une catégorie
+// ✅ Supprimer une catégorie (admin uniquement) — avec protection
 const deleteCategory = async (req, res) => {
-  const { id } = req.params;
+  const categoryId = parseInt(req.params.id);
 
   try {
-    const result = await deleteCategoryById(id);
-    if (result.affectedRows === 0) {
-      return res.status(404).json({ message: 'Catégorie non trouvée' });
+    const productsUsingCategory = await prisma.product.count({
+      where: { categoryId },
+    });
+
+    if (productsUsingCategory > 0) {
+      return res.status(400).json({
+        message: "Impossible de supprimer : des produits sont liés à cette catégorie.",
+      });
     }
 
-    res.json({ message: 'Catégorie supprimée avec succès' });
+    await prisma.category.delete({ where: { id: categoryId } });
+
+    res.status(200).json({ message: "Catégorie supprimée avec succès." });
   } catch (error) {
     console.error('❌ Erreur deleteCategory:', error.message);
-    res.status(500).json({ message: 'Erreur serveur', error: error.message });
+    res.status(500).json({
+      message: "Erreur lors de la suppression",
+      error: error.message,
+    });
   }
 };
 
 module.exports = {
   listCategories,
-  createCategory,
+  addCategory,
   updateCategory,
   deleteCategory,
 };

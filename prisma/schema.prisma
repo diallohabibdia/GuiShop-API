@@ -1,15 +1,147 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
-// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
-// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
-
 generator client {
   provider = "prisma-client-js"
-  output   = "../generated/prisma"
 }
 
 datasource db {
-  provider = "postgresql"
+  provider = "mysql"
   url      = env("DATABASE_URL")
+}
+
+model User {
+  id                Int              @id @default(autoincrement())
+  prenom            String
+  nom               String
+  email             String           @unique
+  telephone         String
+  password          String
+  location          String?
+  avatar            String?
+  role              String           @default("buyer")
+  createdAt         DateTime         @default(now())
+
+
+  products          Product[]
+  favorites         Favorite[]       @relation("UserFavorites")
+  messagesSent      Message[]        @relation("SentMessages")
+  messagesReceived  Message[]        @relation("ReceivedMessages")
+  conversations1    Conversation[]   @relation("User1")
+  conversations2    Conversation[]   @relation("User2")
+  reports           Report[]
+  posts             Post[]
+  notifications     Notification[]
+}
+
+model Product {
+  id            Int             @id @default(autoincrement())
+  title         String
+  description   String
+  price         Float
+   location     String?
+  status        String          @default("actif")
+  created_at    DateTime        @default(now())
+  user          User            @relation(fields: [userId], references: [id])
+  userId        Int
+  category      Category        @relation(fields: [categoryId], references: [id])
+  categoryId    Int
+  images        ProductImage[]
+  favorites     Favorite[]      @relation("ProductFavorites")
+  reports       Report[]
+  conversations Conversation[]
+}
+
+
+model Post {
+  id         Int             @id @default(autoincrement())
+  title      String
+  content    String
+  image      String?
+  created_at DateTime        @default(now())
+  user       User            @relation(fields: [userId], references: [id])
+  userId     Int
+  favorites  Favorite[]      @relation("PostFavorites")
+  views      Int             @default(0)
+  images     PostImage[]
+}
+
+model Favorite {
+  id        Int       @id @default(autoincrement())
+
+  user      User      @relation("UserFavorites", fields: [userId], references: [id], map: "fk_favorite_user")
+  userId    Int
+
+  post      Post?     @relation("PostFavorites", fields: [postId], references: [id], map: "fk_favorite_post")
+  postId    Int?
+
+  product   Product?  @relation("ProductFavorites", fields: [productId], references: [id], map: "fk_favorite_product")
+  productId Int?
+
+  createdAt DateTime  @default(now())
+}
+
+model Category {
+  id       Int       @id @default(autoincrement())
+  name     String
+  icon     String?
+  products Product[]
+}
+
+model ProductImage {
+  id        Int      @id @default(autoincrement())
+  url       String
+  product   Product  @relation(fields: [productId], references: [id])
+  productId Int
+}
+
+model Message {
+  id             Int           @id @default(autoincrement())
+  content        String
+  created_at     DateTime      @default(now())
+  sender         User          @relation("SentMessages", fields: [senderId], references: [id])
+  senderId       Int
+  receiver       User          @relation("ReceivedMessages", fields: [receiverId], references: [id])
+  receiverId     Int
+  conversation   Conversation  @relation(fields: [conversationId], references: [id])
+  conversationId Int
+}
+
+model Conversation {
+  id          Int         @id @default(autoincrement())
+  user1       User        @relation("User1", fields: [user1Id], references: [id])
+  user1Id     Int
+  user2       User        @relation("User2", fields: [user2Id], references: [id])
+  user2Id     Int
+  product     Product     @relation(fields: [productId], references: [id])
+  productId   Int
+  messages    Message[]
+  updatedAt   DateTime    @updatedAt
+}
+
+model Report {
+  id         Int      @id @default(autoincrement())
+  reason     String
+  created_at DateTime @default(now())
+  user       User     @relation(fields: [userId], references: [id])
+  userId     Int
+  product    Product  @relation(fields: [productId], references: [id])
+  productId  Int
+}
+
+model PostImage {
+  id      Int   @id @default(autoincrement())
+  url     String
+  post    Post  @relation(fields: [postId], references: [id])
+  postId  Int
+}
+
+model Notification {
+  id           Int      @id @default(autoincrement())
+  user         User     @relation(fields: [userId], references: [id])
+  userId       Int
+  type         String
+  title        String
+  body         String
+  icon         String
+  targetRoute  String?
+  isRead       Boolean  @default(false)
+  createdAt    DateTime @default(now())
 }
